@@ -1,0 +1,711 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive U.S. Severe Weather Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        #title-container {
+            background-color: #fff;
+            padding: 15px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+        #title-container h1 {
+            margin: 0;
+            color: #1a365d;
+            font-size: 28px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }
+        #title-container p {
+            margin: 5px 0 0 0;
+            color: #4a5568;
+            font-size: 16px;
+        }
+        #filter-container {
+            padding: 15px;
+            background-color: #fff;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+        #filter-container label {
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        #filter-container select {
+            padding: 5px;
+            margin-right: 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+        #filter-container button {
+            padding: 5px 10px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #filter-container button:hover {
+            background-color: #0056b3;
+        }
+        #map-container {
+            flex: 1;
+            position: relative;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 18px;
+            color: #333;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        #error {
+            color: red;
+            font-weight: bold;
+            margin: 10px 0;
+            display: none;
+        }
+        #bottom-right-stack {
+            position: absolute;
+            right: 24px;
+            bottom: 64px;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 32px;
+            z-index: 1100;
+        }
+        .legend {
+            padding: 10px;
+            background: white;
+            border-radius: 4px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin: 0;
+        }
+        .legend h4 {
+            margin: 0 0 8px 0;
+            color: #2d3748;
+            font-size: 14px;
+        }
+        .legend-item {
+            margin: 5px 0;
+            display: flex;
+            align-items: center;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            margin-right: 8px;
+            border: 1px solid #666;
+        }
+        .legend-text {
+            font-size: 12px;
+            color: #4a5568;
+        }
+        #attribution {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 8px 15px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #2d3748;
+            z-index: 1000;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            font-weight: 500;
+            margin: 0;
+            margin-bottom: 0;
+        }
+        .leaflet-control-attribution {
+            bottom: 0 !important;
+            right: 0 !important;
+            margin: 0 16px 16px 0 !important;
+            background: rgba(255, 255, 255, 0.95) !important;
+            padding: 8px 15px !important;
+            border-radius: 4px !important;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
+        }
+        .leaflet-control-attribution a {
+            color: #2d3748 !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="title-container">
+        <h1 id="dynamic-title">Interactive U.S. Severe Weather Map</h1>
+        <p id="dynamic-subtitle">Select a dataset to begin</p>
+    </div>
+    <div id="filter-container">
+        <label for="dataset-selector">Dataset:</label>
+        <select id="dataset-selector">
+            <option value="tornadoes">Tornadoes (1950-2024)</option>
+            <option value="all_tornadoes">All Tornadoes (1950-2024)</option>
+            <option value="hail">Hail (2024)</option>
+            <option value="wind">Wind (2024)</option>
+        </select>
+        <label for="year-selector">Year:</label>
+        <select id="year-selector">
+            <option value="all">All Years</option>
+        </select>
+        <label for="month-selector">Month:</label>
+        <select id="month-selector">
+            <option value="all">All Months</option>
+        </select>
+        <label for="show-all-tracks">
+            <input type="checkbox" id="show-all-tracks"> Show all tracks
+        </label>
+    </div>
+    <div id="map-container">
+        <div id="map"></div>
+        <div id="loading">Loading data...</div>
+        <div id="error"></div>
+        <div id="bottom-right-stack">
+            <div id="legend-stack-anchor"></div>
+            <!-- Legend will be injected here by Leaflet -->
+            <div id="attribution">Written by Robert Massey</div>
+        </div>
+    </div>
+
+    <script>
+        // Check if Leaflet is loaded
+        if (typeof L === 'undefined') {
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('error').textContent = 'Error: Leaflet library failed to load. Check your internet connection.';
+            document.getElementById('loading').style.display = 'none';
+            throw new Error('Leaflet not loaded');
+        }
+
+        // Initialize the map centered on the continental US
+        var map = L.map('map').setView([39.5, -96.5], 5);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+        let tornadoLayer = L.layerGroup().addTo(map);
+
+        // Force map to adjust to container size
+        setTimeout(() => {
+            map.invalidateSize();
+            console.log('Map initialized at center:', map.getCenter(), 'zoom:', map.getZoom());
+        }, 100);
+
+        // Store data for each dataset
+        let datasetData = {
+            tornadoes: [],
+            all_tornadoes: [],
+            hail: [],
+            wind: []
+        };
+
+        // Function to get color based on magnitude
+        function getColor(mag, dataset) {
+            if (dataset === 'hail') {
+                if (mag >= 2.75) return '#ff0000';
+                if (mag >= 2.00) return '#ff6600';
+                if (mag >= 1.75) return '#ff9900';
+                if (mag >= 1.25) return '#ffcc00';
+                if (mag >= 1.00) return '#ffff00';
+                return '#00ff00';
+            } else if (dataset === 'wind') {
+                if (mag >= 100) return '#ff0000';
+                if (mag >= 75) return '#ff6600';
+                if (mag >= 58) return '#ff9900';
+                if (mag >= 50) return '#ffcc00';
+                return '#ffff00';
+            } else {
+                // For tornadoes, use EF/F scale
+                if (mag >= 5) return '#ff0000';      // EF5/F5
+                if (mag >= 4) return '#ff6600';      // EF4/F4
+                if (mag >= 3) return '#ff9900';      // EF3/F3
+                if (mag >= 2) return '#ffcc00';      // EF2/F2
+                if (mag >= 1) return '#66cc00';      // EF1/F1
+                return '#00cc00';                    // EF0/F0
+            }
+        }
+
+        // Function to create legend
+        function createLegend(dataset) {
+            const legend = L.control({ position: 'bottomright' });
+            
+            legend.onAdd = function(map) {
+                const div = L.DomUtil.create('div', 'legend');
+                let content = '<h4>Legend</h4>';
+                
+                if (dataset === 'hail') {
+                    content += `
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ff0000"></div>
+                            <div class="legend-text">≥ 2.75"</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ff6600"></div>
+                            <div class="legend-text">2.00" - 2.74"</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ff9900"></div>
+                            <div class="legend-text">1.75" - 1.99"</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ffcc00"></div>
+                            <div class="legend-text">1.25" - 1.74"</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ffff00"></div>
+                            <div class="legend-text">1.00" - 1.24"</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #00ff00"></div>
+                            <div class="legend-text">&lt; 1.00"</div>
+                        </div>`;
+                } else if (dataset === 'wind') {
+                    content += `
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ff0000"></div>
+                            <div class="legend-text">≥ 100 mph</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ff6600"></div>
+                            <div class="legend-text">75-99 mph</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ff9900"></div>
+                            <div class="legend-text">58-74 mph</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ffcc00"></div>
+                            <div class="legend-text">50-57 mph</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ffff00"></div>
+                            <div class="legend-text">&lt; 50 mph</div>
+                        </div>`;
+                } else {
+                    content += `
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ff0000"></div>
+                            <div class="legend-text">EF5/F5</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ff6600"></div>
+                            <div class="legend-text">EF4/F4</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ff9900"></div>
+                            <div class="legend-text">EF3/F3</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #ffcc00"></div>
+                            <div class="legend-text">EF2/F2</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #66cc00"></div>
+                            <div class="legend-text">EF1/F1</div>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #00cc00"></div>
+                            <div class="legend-text">EF0/F0</div>
+                        </div>`;
+                }
+                
+                div.innerHTML = content;
+                return div;
+            };
+            
+            return legend;
+        }
+
+        // Function to render data points
+        function renderData(data, dataset) {
+            console.log('Starting to render data...');
+            console.log('Sample of first data point:', data[0]);
+            tornadoLayer.clearLayers();
+            
+            // Remove existing legend
+            if (window.currentLegend) {
+                window.currentLegend.remove();
+            }
+            
+            // Add new legend
+            window.currentLegend = createLegend(dataset);
+            window.currentLegend.addTo(map);
+            // Move the legend into the bottom-right stack, above attribution
+            setTimeout(() => {
+                const legendEl = document.querySelector('.legend.leaflet-control');
+                const stack = document.getElementById('bottom-right-stack');
+                if (legendEl && stack) {
+                    stack.insertBefore(legendEl, document.getElementById('attribution'));
+                }
+            }, 0);
+            
+            let renderedCount = 0;
+            data.forEach(point => {
+                // Validate coordinates
+                if (isNaN(point.startLat) || isNaN(point.startLon) || 
+                    isNaN(point.endLat) || isNaN(point.endLon)) {
+                    console.warn('Invalid coordinates for point:', point);
+                    return;
+                }
+
+                // Create path or point based on dataset
+                let path;
+                if (dataset === 'tornadoes' || dataset === 'all_tornadoes') {
+                    // For tornadoes, create a line with width based on magnitude
+                    const width = Math.max(2, Math.min(10, point.mag * 2)); // Scale width based on magnitude
+                    const color = getColor(point.mag, dataset);
+                    console.log(`Tornado ${point.id}: Magnitude ${point.mag}, Color ${color}, Width ${width}`);
+                    
+                    path = L.polyline([
+                        [point.startLat, point.startLon],
+                        [point.endLat, point.endLon]
+                    ], {
+                        color: color,
+                        weight: width,
+                        opacity: 0.7
+                    });
+                } else {
+                    // For hail and wind, create a point marker
+                    const radius = dataset === 'hail' ? 
+                        Math.max(3, Math.min(8, point.mag * 2)) : // Scale radius based on hail size
+                        Math.max(3, Math.min(8, point.mag / 10)); // Scale radius based on wind speed
+                    
+                    path = L.circleMarker([point.startLat, point.startLon], {
+                        radius: radius,
+                        color: getColor(point.mag, dataset),
+                        fillColor: getColor(point.mag, dataset),
+                        fillOpacity: 0.7
+                    });
+                }
+
+                path.addTo(tornadoLayer);
+                renderedCount++;
+
+                // Bind popup content on click
+                let popupContent = `
+                    <b>ID:</b> ${point.id}<br>
+                    <b>Date:</b> ${point.date}<br>
+                    <b>State:</b> ${point.state}<br>`;
+                
+                if (dataset === 'hail') {
+                    popupContent += `<b>Hail Size:</b> ${point.mag} inches<br>`;
+                } else if (dataset === 'wind') {
+                    popupContent += `<b>Wind Speed:</b> ${point.mag} mph<br>`;
+                } else {
+                    popupContent += `<b>F/EF Scale:</b> ${point.fScale}<br>
+                        <b>Path Length:</b> ${point.length} miles<br>
+                        <b>Path Width:</b> ${point.width} yards<br>`;
+                }
+                
+                popupContent += `
+                    <b>Injuries:</b> ${point.injuries}<br>
+                    <b>Fatalities:</b> ${point.fatalities}<br>
+                    <b>Damage:</b> $${point.damage.toLocaleString()}`;
+                
+                path.bindPopup(popupContent);
+            });
+            console.log(`Successfully rendered ${renderedCount} points`);
+        }
+
+        // Function to load dataset
+        function loadDataset() {
+            const dataset = document.getElementById('dataset-selector').value;
+            const yearSelect = document.getElementById('year-selector');
+            const monthSelect = document.getElementById('month-selector');
+            
+            // Show loading message
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('error').style.display = 'none';
+            
+            // Clear existing data
+            tornadoLayer.clearLayers();
+            
+            // Get the appropriate CSV file
+            let csvFile;
+            switch(dataset) {
+                case 'tornadoes':
+                    csvFile = 'Data/1950-2024_actual_tornadoes.csv';
+                    break;
+                case 'all_tornadoes':
+                    csvFile = 'Data/1950-2024_all_tornadoes.csv';
+                    break;
+                case 'hail':
+                    csvFile = 'Data/2024_hail.csv';
+                    break;
+                case 'wind':
+                    csvFile = 'Data/2024_wind.csv';
+                    break;
+            }
+            
+            console.log('Loading dataset:', dataset, 'from file:', csvFile);
+            
+            fetch(csvFile)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.text();
+                })
+                .then(csvText => {
+                    console.log('Received CSV text, length:', csvText.length);
+                    
+                    Papa.parse(csvText, {
+                        header: true,
+                        dynamicTyping: true,
+                        transform: (value, field) => {
+                            // Clean numeric fields
+                            if (['mag', 'slat', 'slon', 'elat', 'elon', 'len', 'wid', 'inj', 'fat', 'loss'].includes(field)) {
+                                const num = parseFloat(value);
+                                if (isNaN(num)) {
+                                    console.warn(`Invalid numeric value for ${field}:`, value);
+                                    return 0;
+                                }
+                                return num;
+                            }
+                            return value;
+                        },
+                        complete: function(results) {
+                            console.log('Parsing complete. Rows:', results.data.length);
+                            
+                            if (results.data.length === 0) {
+                                throw new Error('No data received from CSV file');
+                            }
+                            
+                            // Transform the data to match our expected format
+                            const validData = results.data
+                                .filter(row => {
+                                    const hasValidCoords = !isNaN(row.slat) && !isNaN(row.slon) && 
+                                                         !isNaN(row.elat) && !isNaN(row.elon) && 
+                                                         row.slat !== 0 && row.slon !== 0 && 
+                                                         row.elat !== 0 && row.elon !== 0 &&
+                                                         row.yr && row.mo;
+                                    return hasValidCoords;
+                                })
+                                .map(row => ({
+                                    id: row.om || 'unknown',
+                                    year: parseInt(row.yr),
+                                    month: parseInt(row.mo),
+                                    date: row.date || 'Unknown',
+                                    startLat: parseFloat(row.slat),
+                                    startLon: parseFloat(row.slon),
+                                    endLat: parseFloat(row.elat),
+                                    endLon: parseFloat(row.elon),
+                                    width: parseFloat(row.wid) || 10,
+                                    length: parseFloat(row.len) || 0.1,
+                                    mag: parseFloat(row.mag) || 0,
+                                    fScale: row.mag >= 0 ? 'EF' + row.mag : 'Unknown',
+                                    injuries: parseInt(row.inj) || 0,
+                                    fatalities: parseInt(row.fat) || 0,
+                                    damage: parseFloat(row.loss) || 0,
+                                    state: row.st || 'Unknown'
+                                }));
+                            
+                            console.log('Valid data points:', validData.length);
+                            console.log('Sample data point:', validData[0]);
+                            
+                            // Update year options
+                            const years = [...new Set(validData.map(row => row.year))].sort((a, b) => b - a);
+                            yearSelect.innerHTML = years.map(year => 
+                                `<option value="${year}">${year}</option>`
+                            ).join('');
+                            
+                            // Automatically select the latest year
+                            const latestYear = years[0];
+                            yearSelect.value = latestYear;
+                            
+                            // Update month options based on selected year
+                            const months = [...new Set(validData
+                                .filter(row => row.year === latestYear)
+                                .map(row => row.month)
+                            )].sort((a, b) => a - b);
+                            
+                            monthSelect.innerHTML = '<option value="all">All Months</option>' + 
+                                months.map(month => 
+                                    `<option value="${month}">${month}</option>`
+                                ).join('');
+                            
+                            // Store the data
+                            window.currentData = validData;
+                            
+                            // Filter and render the data
+                            filterData();
+                            
+                            // Hide loading message
+                            document.getElementById('loading').style.display = 'none';
+                        },
+                        error: function(error) {
+                            console.error('Error parsing CSV:', error);
+                            document.getElementById('error').textContent = 'Error parsing CSV file: ' + error.message;
+                            document.getElementById('error').style.display = 'block';
+                            document.getElementById('loading').style.display = 'none';
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading CSV:', error);
+                    document.getElementById('error').textContent = 'Error loading CSV file: ' + error.message;
+                    document.getElementById('error').style.display = 'block';
+                    document.getElementById('loading').style.display = 'none';
+                });
+        }
+
+        // Function to update title
+        function updateTitle() {
+            const dataset = document.getElementById('dataset-selector').value;
+            const year = document.getElementById('year-selector').value;
+            const month = document.getElementById('month-selector').value;
+            
+            let title = '';
+            let subtitle = '';
+            
+            switch(dataset) {
+                case 'tornadoes':
+                    title = 'U.S. Tornado Tracks';
+                    break;
+                case 'all_tornadoes':
+                    title = 'U.S. All Tornado Tracks';
+                    break;
+                case 'hail':
+                    title = 'U.S. Hail Reports';
+                    break;
+                case 'wind':
+                    title = 'U.S. Wind Reports';
+                    break;
+            }
+            
+            if (year !== 'all') {
+                subtitle = year;
+                if (month !== 'all') {
+                    subtitle += ` - ${getMonthName(parseInt(month))}`;
+                }
+            }
+            
+            document.getElementById('dynamic-title').textContent = title;
+            document.getElementById('dynamic-subtitle').textContent = subtitle;
+        }
+
+        // Helper function to get month name
+        function getMonthName(month) {
+            const months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                          'July', 'August', 'September', 'October', 'November', 'December'];
+            return months[month - 1];
+        }
+
+        // Function to filter data
+        function filterData() {
+            const year = document.getElementById('year-selector').value;
+            const month = document.getElementById('month-selector').value;
+            const dataset = document.getElementById('dataset-selector').value;
+            const showAllTracks = document.getElementById('show-all-tracks').checked;
+            
+            console.log('Filtering data:', { year, month, dataset, showAllTracks });
+            
+            if (!window.currentData) {
+                console.error('No data available to filter');
+                return;
+            }
+            
+            let filteredData = window.currentData;
+            
+            // Filter by year
+            if (year !== 'all') {
+                filteredData = filteredData.filter(row => row.year === parseInt(year));
+            }
+            
+            // Filter by month
+            if (month !== 'all') {
+                filteredData = filteredData.filter(row => row.month === parseInt(month));
+            }
+            
+            // If showing all tracks, include historical data
+            if (showAllTracks && (dataset === 'tornadoes' || dataset === 'all_tornadoes')) {
+                // Keep the current filtered data but add historical tracks
+                const historicalData = window.currentData.filter(row => 
+                    row.year < parseInt(year) || 
+                    (row.year === parseInt(year) && row.month < parseInt(month))
+                );
+                filteredData = [...filteredData, ...historicalData];
+            }
+            
+            console.log('Filtered data points:', filteredData.length);
+            
+            // Update title
+            updateTitle();
+            
+            // Render the filtered data
+            renderData(filteredData, dataset);
+        }
+
+        // Add event listeners
+        document.getElementById('dataset-selector').addEventListener('change', loadDataset);
+        document.getElementById('year-selector').addEventListener('change', filterData);
+        document.getElementById('month-selector').addEventListener('change', filterData);
+        document.getElementById('show-all-tracks').addEventListener('change', filterData);
+
+        // Initial load
+        loadDataset();
+    </script>
+</body>
+</html>
