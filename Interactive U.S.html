@@ -18,6 +18,7 @@
                 var filteredData = jsonData.filter(row => row.some(filledCell));
 
                 // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                // Part of solution to cover for data issues. -RWM 20250708
                 var headerRowIndex = filteredData.findIndex((row, index) =>
                   row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
                 );
@@ -403,7 +404,7 @@
             
             let renderedCount = 0;
             data.forEach(point => {
-                // Validate coordinates
+                // Validate coordinates input validation 
                 if (isNaN(point.startLat) || isNaN(point.startLon) || 
                     isNaN(point.endLat) || isNaN(point.endLon)) {
                     console.warn('Invalid coordinates for point:', point);
@@ -499,7 +500,7 @@
                     break;
             }
             
-            console.log('Loading dataset:', dataset, 'from file:', csvFile);
+            console.log('Loading dataset:', dataset, 'from file:', csvFile); //Log Required for issues and troubleshooting.
             
             fetch(csvFile)
                 .then(response => {
